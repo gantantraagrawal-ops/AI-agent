@@ -15,8 +15,7 @@ import importlib
 import sys
 import getpass
 import re
-import requests
-import json
+import google.generativeai as genai
 
 
 def run_agent():
@@ -31,6 +30,9 @@ def run_agent():
     if not api_key:
         print("❌ API key is required. Exiting.")
         return
+    
+    # Set the API key as environment variable for google.generativeai
+    os.environ["GEMINI_API_KEY"] = api_key
     
     # Get user's high-level goal
     print("\n🎯 What would you like me to accomplish?")
@@ -52,11 +54,8 @@ def run_agent():
     
     # Initialize Gemini API configuration
     try:
-        gemini_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
-        gemini_headers = {
-            'Content-Type': 'application/json',
-            'X-goog-api-key': api_key
-        }
+        genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+        model = genai.GenerativeModel("gemini-2.5-pro-exp-03-25")
         print("✅ Gemini API configuration initialized")
     except Exception as e:
         print(f"❌ Failed to initialize Gemini API configuration: {e}")
@@ -69,24 +68,9 @@ def run_agent():
     planning_system_prompt = """You are a world-class planner AI. Your job is to break down a high-level user goal into a sequence of small, atomic, and logical steps. Each step must have a clear sub-goal. The output must be a numbered list of these steps. Do not add any conversational fluff."""
     
     try:
-        response = requests.post(
-            gemini_url,
-            headers=gemini_headers,
-            json={
-                "contents": [
-                    {
-                        "parts": [
-                            {
-                                "text": f"System: {planning_system_prompt}\n\nUser: {goal}"
-                            }
-                        ]
-                    }
-                ]
-            }
-        )
-        response.raise_for_status()
-        response_data = response.json()
-        plan_text = response_data['candidates'][0]['content']['parts'][0]['text']
+        prompt = f"System: {planning_system_prompt}\n\nUser: {goal}"
+        response = model.generate_content(prompt)
+        plan_text = response.text
         print("📋 Generated plan:")
         print(plan_text)
         
@@ -115,7 +99,7 @@ def run_agent():
         
         try:
             # Tool Discovery: Check if suitable tool exists
-            existing_tool = discover_existing_tool(gemini_url, gemini_headers, step, tools_dir)
+            existing_tool = discover_existing_tool(model, step, tools_dir)
             
             if existing_tool:
                 print(f"🔍 Found existing tool: {existing_tool}")
@@ -123,7 +107,7 @@ def run_agent():
             else:
                 print(f"🛠️  No suitable tool found. Creating new tool...")
                 tool_filename = generate_tool_filename(step)
-                result = create_and_execute_tool(gemini_url, gemini_headers, step, tool_filename, tools_dir, execution_context)
+                result = create_and_execute_tool(model, step, tool_filename, tools_dir, execution_context)
             
             # Store result in execution context for next steps
             execution_context[f"step_{i}_result"] = result
@@ -160,7 +144,7 @@ def parse_plan(plan_text):
     return steps
 
 
-def discover_existing_tool(gemini_url, gemini_headers, step, tools_dir):
+def discover_existing_tool(model, step, tools_dir):
     """Check if any existing tool can handle the current step."""
     if not os.path.exists(tools_dir):
         return None
@@ -196,24 +180,9 @@ def discover_existing_tool(gemini_url, gemini_headers, step, tools_dir):
     user_prompt = f"Task: {step}\n\nAvailable Tools:\n" + "\n".join(available_tools)
     
     try:
-        response = requests.post(
-            gemini_url,
-            headers=gemini_headers,
-            json={
-                "contents": [
-                    {
-                        "parts": [
-                            {
-                                "text": f"System: {discovery_system_prompt}\n\nUser: {user_prompt}"
-                            }
-                        ]
-                    }
-                ]
-            }
-        )
-        response.raise_for_status()
-        response_data = response.json()
-        result = response_data['candidates'][0]['content']['parts'][0]['text'].strip()
+        prompt = f"System: {discovery_system_prompt}\n\nUser: {user_prompt}"
+        response = model.generate_content(prompt)
+        result = response.text.strip()
         
         # Clean up the result
         if result.lower() == 'none' or 'none' in result.lower():
@@ -275,7 +244,7 @@ def generate_tool_filename(step):
     return f"{filename}.py"
 
 
-def create_and_execute_tool(gemini_url, gemini_headers, step, tool_filename, tools_dir, execution_context):
+def create_and_execute_tool(model, step, tool_filename, tools_dir, execution_context):
     """Create a new tool and execute it to accomplish the current step."""
     
     # Generate the tool using LLM
@@ -284,24 +253,9 @@ def create_and_execute_tool(gemini_url, gemini_headers, step, tool_filename, too
     user_prompt = f"Create a Python tool to accomplish this task: {step}. The tool should be named '{tool_filename}'."
     
     try:
-        response = requests.post(
-            gemini_url,
-            headers=gemini_headers,
-            json={
-                "contents": [
-                    {
-                        "parts": [
-                            {
-                                "text": f"System: {tool_creation_system_prompt}\n\nUser: {user_prompt}"
-                            }
-                        ]
-                    }
-                ]
-            }
-        )
-        response.raise_for_status()
-        response_data = response.json()
-        tool_code = response_data['candidates'][0]['content']['parts'][0]['text'].strip()
+        prompt = f"System: {tool_creation_system_prompt}\n\nUser: {user_prompt}"
+        response = model.generate_content(prompt)
+        tool_code = response.text.strip()
         
         # Clean up the code (remove markdown formatting if present)
         if tool_code.startswith('```python'):
@@ -333,7 +287,7 @@ def check_dependencies(tool_code):
     standard_libs = {
         'os', 'sys', 're', 'json', 'datetime', 'time', 'random', 'math', 
         'collections', 'itertools', 'functools', 'pathlib', 'urllib', 'http',
-        'ssl', 'socket', 'threading', 'subprocess', 'tempfile', 'shutil', 'requests'
+        'ssl', 'socket', 'threading', 'subprocess', 'tempfile', 'shutil'
     }
     
     # Simple regex to find import statements
