@@ -15,7 +15,8 @@ import importlib
 import sys
 import getpass
 import re
-from together import Together
+import requests
+import json
 
 
 def run_agent():
@@ -25,8 +26,8 @@ def run_agent():
     print("🤖 Autonomous Agent Initializing...")
     print("=" * 50)
     
-    # Get Together API key securely
-    api_key = getpass.getpass("Enter your Together API key: ")
+    # Get Gemini API key securely
+    api_key = getpass.getpass("Enter your Gemini API key: ")
     if not api_key:
         print("❌ API key is required. Exiting.")
         return
@@ -49,12 +50,16 @@ def run_agent():
     if tools_dir not in sys.path:
         sys.path.insert(0, tools_dir)
     
-    # Initialize Together client
+    # Initialize Gemini API configuration
     try:
-        client = Together(api_key=api_key)
-        print("✅ Together API client initialized")
+        gemini_url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+        gemini_headers = {
+            'Content-Type': 'application/json',
+            'X-goog-api-key': api_key
+        }
+        print("✅ Gemini API configuration initialized")
     except Exception as e:
-        print(f"❌ Failed to initialize Together API client: {e}")
+        print(f"❌ Failed to initialize Gemini API configuration: {e}")
         return
     
     # Phase 2: Planning
@@ -64,16 +69,24 @@ def run_agent():
     planning_system_prompt = """You are a world-class planner AI. Your job is to break down a high-level user goal into a sequence of small, atomic, and logical steps. Each step must have a clear sub-goal. The output must be a numbered list of these steps. Do not add any conversational fluff."""
     
     try:
-        response = client.chat.completions.create(
-            model="deepseek-ai/DeepSeek-R1",
-            messages=[
-                {"role": "system", "content": planning_system_prompt},
-                {"role": "user", "content": goal}
-            ],
-            max_tokens=4096,
-            temperature=0.1
+        response = requests.post(
+            gemini_url,
+            headers=gemini_headers,
+            json={
+                "contents": [
+                    {
+                        "parts": [
+                            {
+                                "text": f"System: {planning_system_prompt}\n\nUser: {goal}"
+                            }
+                        ]
+                    }
+                ]
+            }
         )
-        plan_text = response.choices[0].message.content
+        response.raise_for_status()
+        response_data = response.json()
+        plan_text = response_data['candidates'][0]['content']['parts'][0]['text']
         print("📋 Generated plan:")
         print(plan_text)
         
@@ -102,7 +115,7 @@ def run_agent():
         
         try:
             # Tool Discovery: Check if suitable tool exists
-            existing_tool = discover_existing_tool(client, step, tools_dir)
+            existing_tool = discover_existing_tool(gemini_url, gemini_headers, step, tools_dir)
             
             if existing_tool:
                 print(f"🔍 Found existing tool: {existing_tool}")
@@ -110,7 +123,7 @@ def run_agent():
             else:
                 print(f"🛠️  No suitable tool found. Creating new tool...")
                 tool_filename = generate_tool_filename(step)
-                result = create_and_execute_tool(client, step, tool_filename, tools_dir, execution_context)
+                result = create_and_execute_tool(gemini_url, gemini_headers, step, tool_filename, tools_dir, execution_context)
             
             # Store result in execution context for next steps
             execution_context[f"step_{i}_result"] = result
@@ -147,7 +160,7 @@ def parse_plan(plan_text):
     return steps
 
 
-def discover_existing_tool(client, step, tools_dir):
+def discover_existing_tool(gemini_url, gemini_headers, step, tools_dir):
     """Check if any existing tool can handle the current step."""
     if not os.path.exists(tools_dir):
         return None
@@ -183,17 +196,24 @@ def discover_existing_tool(client, step, tools_dir):
     user_prompt = f"Task: {step}\n\nAvailable Tools:\n" + "\n".join(available_tools)
     
     try:
-        response = client.chat.completions.create(
-            model="deepseek-ai/DeepSeek-R1",
-            messages=[
-                {"role": "system", "content": discovery_system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            max_tokens=100,
-            temperature=0.1
+        response = requests.post(
+            gemini_url,
+            headers=gemini_headers,
+            json={
+                "contents": [
+                    {
+                        "parts": [
+                            {
+                                "text": f"System: {discovery_system_prompt}\n\nUser: {user_prompt}"
+                            }
+                        ]
+                    }
+                ]
+            }
         )
-        
-        result = response.choices[0].message.content.strip()
+        response.raise_for_status()
+        response_data = response.json()
+        result = response_data['candidates'][0]['content']['parts'][0]['text'].strip()
         
         # Clean up the result
         if result.lower() == 'none' or 'none' in result.lower():
@@ -255,7 +275,7 @@ def generate_tool_filename(step):
     return f"{filename}.py"
 
 
-def create_and_execute_tool(client, step, tool_filename, tools_dir, execution_context):
+def create_and_execute_tool(gemini_url, gemini_headers, step, tool_filename, tools_dir, execution_context):
     """Create a new tool and execute it to accomplish the current step."""
     
     # Generate the tool using LLM
@@ -264,17 +284,24 @@ def create_and_execute_tool(client, step, tool_filename, tools_dir, execution_co
     user_prompt = f"Create a Python tool to accomplish this task: {step}. The tool should be named '{tool_filename}'."
     
     try:
-        response = client.chat.completions.create(
-            model="deepseek-ai/DeepSeek-R1",
-            messages=[
-                {"role": "system", "content": tool_creation_system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            max_tokens=4096,
-            temperature=0.1
+        response = requests.post(
+            gemini_url,
+            headers=gemini_headers,
+            json={
+                "contents": [
+                    {
+                        "parts": [
+                            {
+                                "text": f"System: {tool_creation_system_prompt}\n\nUser: {user_prompt}"
+                            }
+                        ]
+                    }
+                ]
+            }
         )
-        
-        tool_code = response.choices[0].message.content.strip()
+        response.raise_for_status()
+        response_data = response.json()
+        tool_code = response_data['candidates'][0]['content']['parts'][0]['text'].strip()
         
         # Clean up the code (remove markdown formatting if present)
         if tool_code.startswith('```python'):
@@ -306,7 +333,7 @@ def check_dependencies(tool_code):
     standard_libs = {
         'os', 'sys', 're', 'json', 'datetime', 'time', 'random', 'math', 
         'collections', 'itertools', 'functools', 'pathlib', 'urllib', 'http',
-        'ssl', 'socket', 'threading', 'subprocess', 'tempfile', 'shutil'
+        'ssl', 'socket', 'threading', 'subprocess', 'tempfile', 'shutil', 'requests'
     }
     
     # Simple regex to find import statements
